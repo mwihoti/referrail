@@ -1,0 +1,25 @@
+node_modules/
+.next/
+out/
+dist/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.json.key
+.near-credentials/
+
+# Rust
+target/
+contracts/**/target/
+.wasm-sysroot/
+
+# Local tooling
+.freebuff/
+.buildlogs/
+*.log
+.DS_Store
+tsconfig.tsbuildinfo
+next-env.d.ts
