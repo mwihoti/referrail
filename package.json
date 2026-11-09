@@ -1,0 +1,29 @@
+{
+  "name": "referrail-near",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ReferRail NEAR — pay-on-sale referral splits on NEAR, with a gasless creator relayer and NEAR Intents cross-chain payouts",
+  "license": "MIT",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace apps/web",
+    "build": "npm run build --workspace apps/web",
+    "start": "npm run start --workspace apps/web",
+    "typecheck": "npm run typecheck --workspace apps/web",
+    "seed": "tsx scripts/seed-demo.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "relay-client": "tsx scripts/relay-client.ts"
+  },
+  "dependencies": {
+    "near-api-js": "7.4.0",
+    "borsh": "2.0.0"
+  },
+  "devDependencies": {
+    "dotenv": "^17.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0"
+  }
+}
