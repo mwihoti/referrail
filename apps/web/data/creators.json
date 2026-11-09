@@ -1,0 +1,46 @@
+{
+  "creators": [
+    {
+      "account": "ada.testnet",
+      "name": "Ada K.",
+      "tags": ["fitness", "yoga", "wellness", "class", "pdf"],
+      "audience": "English-speaking beginners buying online fitness classes",
+      "sampleUrl": "https://example.com/ada"
+    },
+    {
+      "account": "bruno.testnet",
+      "name": "Bruno M.",
+      "tags": ["developer", "tutorial", "pdf", "guide", "course"],
+      "audience": "Junior developers who read technical guides",
+      "sampleUrl": "https://example.com/bruno"
+    },
+    {
+      "account": "chidi.testnet",
+      "name": "Chidi O.",
+      "tags": ["design", "template", "figma", "ui", "class"],
+      "audience": "Product designers looking for templates",
+      "sampleUrl": "https://example.com/chidi"
+    },
+    {
+      "account": "dana.testnet",
+      "name": "Dana P.",
+      "tags": ["finance", "crypto", "usdc", "trading", "report"],
+      "audience": "Crypto-curious readers in East Africa",
+      "sampleUrl": "https://example.com/dana"
+    },
+    {
+      "account": "elif.testnet",
+      "name": "Elif S.",
+      "tags": ["language", "tutoring", "class", "study"],
+      "audience": "Students booking 1:1 language lessons",
+      "sampleUrl": "https://example.com/elif"
+    },
+    {
+      "account": "farah.testnet",
+      "name": "Farah N.",
+      "tags": ["marketing", "social", "newsletter", "course"],
+      "audience": "Small businesses learning organic marketing",
+      "sampleUrl": "https://example.com/farah"
+    }
+  ]
+}
