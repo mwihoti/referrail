@@ -129,6 +129,41 @@ export function decodeSignedDelegate(base64: string): SignedDelegate {
   return deserialize(SCHEMA.SignedDelegate, bytes) as unknown as SignedDelegate;
 }
 
+interface ReceiptOutcomeLike {
+  outcome?: { logs?: string[]; status?: unknown };
+}
+
+function receiptsOf(outcome: unknown): ReceiptOutcomeLike[] {
+  const list = (outcome as { receipts_outcome?: unknown })?.receipts_outcome;
+  return Array.isArray(list) ? (list as ReceiptOutcomeLike[]) : [];
+}
+
+/**
+ * The first failed receipt in a transaction outcome, as a readable message.
+ * A transaction's top-level status can be a success while an inner receipt
+ * failed — e.g. a meta transaction whose delegated contract call panicked.
+ */
+export function receiptFailure(outcome: unknown): string | null {
+  for (const receipt of receiptsOf(outcome)) {
+    const status = receipt.outcome?.status as { Failure?: unknown } | undefined;
+    if (status && typeof status === "object" && "Failure" in status) {
+      const failure = JSON.stringify(status.Failure);
+      const match = failure.match(/"ExecutionError":"((?:[^"\\]|\\.)*)"/);
+      if (!match) return failure;
+      // e.g. "Smart contract panicked: panicked at src/lib.rs:401:48:\noffer not found"
+      const message = (JSON.parse(`"${match[1]}"`) as string).replace(/^Smart contract panicked:\s*/, "");
+      const lines = message.split("\n").map((line) => line.trim()).filter(Boolean);
+      return lines[lines.length - 1] ?? message;
+    }
+  }
+  return null;
+}
+
+/** All log lines emitted across a transaction's receipts. */
+export function receiptLogs(outcome: unknown): string[] {
+  return receiptsOf(outcome).flatMap((receipt) => receipt.outcome?.logs ?? []);
+}
+
 /** Submit a signed delegate using the relayer's funded account(s). */
 export async function relaySignedDelegate(base64: string): Promise<unknown> {
   const relayer = relayerKeys();
@@ -139,7 +174,12 @@ export async function relaySignedDelegate(base64: string): Promise<unknown> {
       : MultiKeySigner.fromSecretKeys(relayer.keys as KeyPairString[]);
   const relayerAccount = new Account(relayer.account, provider(), signer);
   const signedDelegate = decodeSignedDelegate(base64);
-  return relayerAccount.relayMetaTransaction(signedDelegate);
+  const outcome = await relayerAccount.relayMetaTransaction(signedDelegate);
+  // The relayer's transaction succeeds even when the delegated call panics,
+  // so surface the inner failure instead of reporting a phantom success.
+  const failure = receiptFailure(outcome);
+  if (failure) throw new Error(failure);
+  return outcome;
 }
 
 /**

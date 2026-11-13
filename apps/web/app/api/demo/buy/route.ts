@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { demoDisabled, errorMessage, jsonError, readNumber, readString, requireContract } from "@/lib/api";
 import { demoAccount } from "@/lib/config";
 import { getOffer, getStats } from "@/lib/near/server";
-import { payOffer } from "@/lib/near/signer";
+import { payOffer, receiptFailure, receiptLogs } from "@/lib/near/signer";
 import { clientKey, rateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -44,13 +44,28 @@ export async function POST(request: Request) {
       refCode: ref ?? null,
       price: offer.price,
     });
-    let saleId: number | null = null;
-    for (let attempt = 0; attempt < 5 && saleId === null; attempt += 1) {
-      const after = await getStats();
-      if (after && before && after.sale_count > before.sale_count) {
-        saleId = after.sale_count;
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 600));
+    // The outcome already holds every receipt's logs. ft_on_transfer refuses a
+    // payment by returning the full amount (the token refunds the buyer) and
+    // logging `REJECT <reason>`; an accepted one logs `SALE_CREATED sale=<id>`.
+    // Reading this transaction's own logs avoids racing other buyers.
+    const logs = receiptLogs(outcome);
+    const reject = logs.find((line) => line.startsWith("REJECT "));
+    if (reject) {
+      return jsonError(`Payment refused by the contract (${reject.slice(7)}); the tokens were returned.`, 409);
+    }
+    const created = logs.map((line) => line.match(/^SALE_CREATED sale=(\d+)/)).find(Boolean);
+    let saleId: number | null = created ? Number(created[1]) : null;
+    if (saleId === null) {
+      const failure = receiptFailure(outcome);
+      if (failure) return jsonError(`Payment failed: ${failure}`, 502);
+      // Fallback for an outcome without logs: watch the sale counter.
+      for (let attempt = 0; attempt < 5 && saleId === null; attempt += 1) {
+        const after = await getStats();
+        if (after && before && after.sale_count > before.sale_count) {
+          saleId = after.sale_count;
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+        }
       }
     }
     return NextResponse.json({
