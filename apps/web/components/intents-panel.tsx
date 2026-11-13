@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatUnits } from "@/lib/format";
 
 interface Token {
   assetId: string;
@@ -22,27 +23,124 @@ interface QuoteResponse {
       amountOut?: string;
       minAmountOut?: string;
       timeEstimate?: number;
+      amountInUsd?: string;
+      amountOutUsd?: string;
     };
     depositAddress?: string;
     depositMemo?: string;
   };
 }
 
+/** Token pair captured at the moment a quote was requested, so the result stays labelled correctly. */
+interface QuotedPair {
+  origin?: Token;
+  destination?: Token;
+  amountBase: string;
+}
+
+const CHAIN_NAMES: Record<string, string> = {
+  near: "NEAR",
+  eth: "Ethereum",
+  base: "Base",
+  arb: "Arbitrum",
+  op: "Optimism",
+  pol: "Polygon",
+  bsc: "BNB Chain",
+  avax: "Avalanche",
+  gnosis: "Gnosis",
+  sol: "Solana",
+  btc: "Bitcoin",
+  doge: "Dogecoin",
+  xrp: "XRP Ledger",
+  zec: "Zcash",
+  tron: "Tron",
+  ton: "TON",
+  sui: "Sui",
+  aptos: "Aptos",
+  stellar: "Stellar",
+  cardano: "Cardano",
+  bera: "Berachain",
+  ltc: "Litecoin",
+  bch: "Bitcoin Cash",
+};
+
+function chainName(chain: string | undefined): string {
+  if (!chain) return "";
+  return CHAIN_NAMES[chain] ?? chain.charAt(0).toUpperCase() + chain.slice(1);
+}
+
+/** Converts a decimal amount typed by the user ("1.5") into the token's smallest units ("1500000"). */
+function toBaseUnits(value: string, decimals: number): string | null {
+  const trimmed = value.trim();
+  if (!/^\d*(\.\d*)?$/.test(trimmed) || trimmed === "" || trimmed === ".") return null;
+  const [whole = "", fraction = ""] = trimmed.split(".");
+  if (fraction.length > decimals) return null;
+  return `${whole || "0"}${fraction.padEnd(decimals, "0")}`.replace(/^0+(?=\d)/, "");
+}
+
+function safeUnits(value: string | undefined, decimals: number | undefined): string | null {
+  if (!value || decimals === undefined || !/^\d+$/.test(value)) return null;
+  try {
+    return formatUnits(value, decimals);
+  } catch {
+    return null;
+  }
+}
+
+function formatUsd(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return number.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+}
+
+function formatDuration(seconds: number | undefined): string | null {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return null;
+  if (seconds < 60) return `About ${Math.max(1, Math.round(seconds))} seconds`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `About ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.round(minutes / 60);
+  return `About ${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+/** Labels for an asset dropdown. Symbols that appear twice on one chain get a short id to tell them apart. */
+function assetLabels(options: Token[]): Map<string, string> {
+  const counts = new Map<string, number>();
+  for (const token of options) counts.set(token.symbol, (counts.get(token.symbol) ?? 0) + 1);
+  const labels = new Map<string, string>();
+  for (const token of options) {
+    if ((counts.get(token.symbol) ?? 0) > 1) {
+      const id = token.assetId.replace(/^nep\d+:/, "");
+      const short = id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id;
+      labels.set(token.assetId, `${token.symbol} (${short})`);
+    } else {
+      labels.set(token.assetId, token.symbol);
+    }
+  }
+  return labels;
+}
+
+function cleanReason(message: string): string {
+  return message.replace(/^Quote failed:\s*/i, "");
+}
+
 export function IntentsPanel({ liveAllowed, jwtConfigured }: { liveAllowed: boolean; jwtConfigured: boolean }) {
   const [tokens, setTokens] = useState<Token[]>([]);
   const [chains, setChains] = useState<string[]>([]);
+  const [tokensLoaded, setTokensLoaded] = useState(false);
   const [tokenError, setTokenError] = useState<string | null>(null);
-  const [originChain, setOriginChain] = useState("eth");
-  const [destinationChain, setDestinationChain] = useState("near");
+  const [originChain, setOriginChain] = useState("near");
+  const [destinationChain, setDestinationChain] = useState("base");
   const [originAsset, setOriginAsset] = useState("");
   const [destinationAsset, setDestinationAsset] = useState("");
-  const [amount, setAmount] = useState("1000000");
-  const [recipient, setRecipient] = useState("example.near");
-  const [refundTo, setRefundTo] = useState("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
+  const [amountInput, setAmountInput] = useState("1");
+  const [recipient, setRecipient] = useState("");
+  const [refundTo, setRefundTo] = useState("");
   const [confirmLive, setConfirmLive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QuoteResponse | null>(null);
+  const [quoted, setQuoted] = useState<QuotedPair | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -52,18 +150,27 @@ export function IntentsPanel({ liveAllowed, jwtConfigured }: { liveAllowed: bool
         if (!response.ok) throw new Error(payload.error ?? "Token list failed");
         setTokens(payload.tokens ?? []);
         setChains(payload.chains ?? []);
-        const firstOrigin = (payload.tokens ?? []).find((token) => token.blockchain === "eth");
-        const firstNear = (payload.tokens ?? []).find((token) => token.blockchain === "near");
-        if (firstOrigin) {
-          setOriginChain(firstOrigin.blockchain);
-          setOriginAsset(firstOrigin.assetId);
-        }
+        // Default to moving NEAR earnings onward: prefer USDC on each chain, else the first token listed.
+        const list = payload.tokens ?? [];
+        const pick = (chain: string) =>
+          list.find((token) => token.blockchain === chain && token.symbol.toUpperCase() === "USDC") ??
+          list.find((token) => token.blockchain === chain);
+        const firstNear = pick("near");
+        const firstDestination = pick("base") ?? pick("eth");
         if (firstNear) {
-          setDestinationChain(firstNear.blockchain);
-          setDestinationAsset(firstNear.assetId);
+          setOriginChain(firstNear.blockchain);
+          setOriginAsset(firstNear.assetId);
+        }
+        if (firstDestination) {
+          setDestinationChain(firstDestination.blockchain);
+          setDestinationAsset(firstDestination.assetId);
         }
       } catch (err) {
-        setTokenError(err instanceof Error ? err.message : "Could not load 1Click tokens");
+        setTokenError(
+          `Couldn't load the list of supported tokens: ${err instanceof Error ? err.message : "unknown error"}. Please refresh to try again.`,
+        );
+      } finally {
+        setTokensLoaded(true);
       }
     })();
   }, []);
@@ -76,19 +183,36 @@ export function IntentsPanel({ liveAllowed, jwtConfigured }: { liveAllowed: bool
     () => tokens.filter((token) => token.blockchain === destinationChain).slice(0, 200),
     [tokens, destinationChain],
   );
+  const originLabels = useMemo(() => assetLabels(originOptions), [originOptions]);
+  const destinationLabels = useMemo(() => assetLabels(destinationOptions), [destinationOptions]);
 
   const chosenOrigin = tokens.find((token) => token.assetId === originAsset);
   const chosenDestination = tokens.find((token) => token.assetId === destinationAsset);
+  const liveMode = liveAllowed && confirmLive;
 
   async function quote() {
     setBusy(true);
     setError(null);
     setResult(null);
+    setQuoted(null);
     try {
-      if (!originAsset || !destinationAsset) throw new Error("Pick an origin and destination asset");
-      if (!recipient.trim()) throw new Error("Recipient address is required");
-      if (!refundTo.trim()) throw new Error("A refund address on the origin chain is required by 1Click");
-      if (!/^\d+$/.test(amount)) throw new Error("Amount must be an integer in the origin token's smallest units");
+      if (!originAsset || !destinationAsset || !chosenOrigin) {
+        throw new Error("Choose a token to send and a token to receive.");
+      }
+      if (!recipient.trim()) throw new Error("Enter the address that should receive the payout.");
+      if (!refundTo.trim()) {
+        throw new Error(
+          `Enter a refund address on ${chainName(chosenOrigin.blockchain)}. If the route can't complete, funds go back there.`,
+        );
+      }
+      const amount = toBaseUnits(amountInput, chosenOrigin.decimals);
+      if (amount === null || !/^\d+$/.test(amount)) {
+        throw new Error(
+          `Enter an amount like 25 or 12.5, with at most ${chosenOrigin.decimals} decimal places.`,
+        );
+      }
+      if (/^0+$/.test(amount)) throw new Error("Enter an amount greater than zero.");
+      const pair: QuotedPair = { origin: chosenOrigin, destination: chosenDestination, amountBase: amount };
       const response = await fetch("/api/intents/quote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -103,27 +227,57 @@ export function IntentsPanel({ liveAllowed, jwtConfigured }: { liveAllowed: bool
       });
       const payload = (await response.json()) as QuoteResponse;
       if (!response.ok) throw new Error(payload.error ?? "Quote failed");
+      setQuoted(pair);
       setResult(payload);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Quote failed");
+      setError(`Couldn't get an estimate: ${cleanReason(err instanceof Error ? err.message : "Quote failed")}`);
     } finally {
       setBusy(false);
     }
   }
 
+  const details = result?.quote?.quote;
+  const sendAmount = safeUnits(details?.amountIn ?? quoted?.amountBase, quoted?.origin?.decimals);
+  const receiveAmount = safeUnits(details?.amountOut, quoted?.destination?.decimals);
+  const minimumAmount = safeUnits(details?.minAmountOut, quoted?.destination?.decimals);
+  const sendUsd = formatUsd(details?.amountInUsd);
+  const receiveUsd = formatUsd(details?.amountOutUsd);
+  const costUsd =
+    details?.amountInUsd !== undefined && details?.amountOutUsd !== undefined
+      ? formatUsd(String(Math.max(0, Number(details.amountInUsd) - Number(details.amountOutUsd))))
+      : null;
+  const duration = formatDuration(details?.timeEstimate);
+  const originSymbol = quoted?.origin?.symbol ?? "";
+  const destinationSymbol = quoted?.destination?.symbol ?? "";
+
   return (
-    <div className="stack">
-      <section className="card stack">
-        <div className="row-between">
-          <h2>Dry quote</h2>
-          <span className="badge">{jwtConfigured ? "partner JWT set" : "unauthenticated (extra fee applies)"}</span>
+    <section className="card stack" aria-labelledby="estimate-title">
+      <div className="card-head">
+        <div>
+          <h2 id="estimate-title">Get a payout estimate</h2>
+          <p className="muted small mb-0">See how much arrives on the other side before you choose a route.</p>
         </div>
+        <span className="badge badge-info" title={jwtConfigured ? undefined : "A small extra routing fee applies"}>
+          {jwtConfigured ? "Partner pricing" : "Standard pricing"}
+        </span>
+      </div>
 
-        {tokenError ? <p className="error small">{tokenError}</p> : null}
+      {tokenError ? (
+        <p className="notice notice-error" role="alert">
+          {tokenError}
+        </p>
+      ) : null}
+      {!tokensLoaded ? (
+        <p className="loading small" role="status">
+          Loading supported chains and tokens…
+        </p>
+      ) : null}
 
-        <div className="form-grid">
+      <div className="grid grid-2">
+        <div className="card card-flat card-tight stack-sm">
+          <h3 className="mt-0">Send from</h3>
           <div className="field">
-            <label htmlFor="origin-chain">Origin chain</label>
+            <label htmlFor="origin-chain">Chain</label>
             <select
               id="origin-chain"
               value={originChain}
@@ -136,23 +290,57 @@ export function IntentsPanel({ liveAllowed, jwtConfigured }: { liveAllowed: bool
             >
               {chains.map((chain) => (
                 <option key={chain} value={chain}>
-                  {chain}
+                  {chainName(chain)}
                 </option>
               ))}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="origin-asset">Origin asset</label>
+            <label htmlFor="origin-asset">Token</label>
             <select id="origin-asset" value={originAsset} onChange={(event) => setOriginAsset(event.target.value)}>
               {originOptions.map((token) => (
                 <option key={token.assetId} value={token.assetId}>
-                  {token.symbol} · {token.assetId}
+                  {originLabels.get(token.assetId) ?? token.symbol}
                 </option>
               ))}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="destination-chain">Destination chain</label>
+            <label htmlFor="amount">Amount{chosenOrigin ? ` (${chosenOrigin.symbol})` : ""}</label>
+            <input
+              id="amount"
+              inputMode="decimal"
+              autoComplete="off"
+              value={amountInput}
+              onChange={(event) => setAmountInput(event.target.value.trim())}
+              aria-describedby="amount-hint"
+            />
+            <p id="amount-hint" className="field-hint">
+              The amount of your payout you want to route.
+            </p>
+          </div>
+          <div className="field">
+            <label htmlFor="refundTo">Refund address</label>
+            <input
+              id="refundTo"
+              value={refundTo}
+              onChange={(event) => setRefundTo(event.target.value)}
+              placeholder={`Your ${chainName(chosenOrigin?.blockchain ?? originChain)} address`}
+              autoComplete="off"
+              spellCheck={false}
+              aria-describedby="refund-hint"
+            />
+            <p id="refund-hint" className="field-hint">
+              On {chainName(chosenOrigin?.blockchain ?? originChain)}. If the route can&apos;t complete, funds return
+              here.
+            </p>
+          </div>
+        </div>
+
+        <div className="card card-flat card-tight stack-sm">
+          <h3 className="mt-0">Receive on</h3>
+          <div className="field">
+            <label htmlFor="destination-chain">Chain</label>
             <select
               id="destination-chain"
               value={destinationChain}
@@ -165,13 +353,13 @@ export function IntentsPanel({ liveAllowed, jwtConfigured }: { liveAllowed: bool
             >
               {chains.map((chain) => (
                 <option key={chain} value={chain}>
-                  {chain}
+                  {chainName(chain)}
                 </option>
               ))}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="destination-asset">Destination asset</label>
+            <label htmlFor="destination-asset">Token</label>
             <select
               id="destination-asset"
               value={destinationAsset}
@@ -179,79 +367,160 @@ export function IntentsPanel({ liveAllowed, jwtConfigured }: { liveAllowed: bool
             >
               {destinationOptions.map((token) => (
                 <option key={token.assetId} value={token.assetId}>
-                  {token.symbol} · {token.assetId}
+                  {destinationLabels.get(token.assetId) ?? token.symbol}
                 </option>
               ))}
             </select>
           </div>
-        </div>
-
-        <div className="form-grid">
           <div className="field">
-            <label htmlFor="amount">
-              Amount ({chosenOrigin?.symbol ?? "origin token"}, smallest units)
-            </label>
-            <input id="amount" value={amount} onChange={(event) => setAmount(event.target.value.trim())} />
-          </div>
-          <div className="field">
-            <label htmlFor="recipient">Recipient ({chosenDestination?.blockchain ?? "destination"} address)</label>
+            <label htmlFor="recipient">Recipient address</label>
             <input
               id="recipient"
               value={recipient}
               onChange={(event) => setRecipient(event.target.value)}
-              placeholder="address that receives this party's share"
+              placeholder={`Your ${chainName(chosenDestination?.blockchain ?? destinationChain)} address`}
+              autoComplete="off"
+              spellCheck={false}
+              aria-describedby="recipient-hint"
             />
-          </div>
-          <div className="field">
-            <label htmlFor="refundTo">Refund address ({chosenOrigin?.blockchain ?? "origin"} chain)</label>
-            <input
-              id="refundTo"
-              value={refundTo}
-              onChange={(event) => setRefundTo(event.target.value)}
-              placeholder="must be valid on the origin chain"
-            />
+            <p id="recipient-hint" className="field-hint">
+              The {chainName(chosenDestination?.blockchain ?? destinationChain)} address that receives the payout.
+            </p>
           </div>
         </div>
+      </div>
 
-        {liveAllowed ? (
-          <label className="row small muted">
+      {liveAllowed ? (
+        <div className={confirmLive ? "notice notice-warn" : "stack-sm"}>
+          <label className="check small" htmlFor="confirm-live">
             <input
+              id="confirm-live"
               type="checkbox"
               checked={confirmLive}
               onChange={(event) => setConfirmLive(event.target.checked)}
               style={{ width: 16, height: 16 }}
             />
-            Live mainnet quote (creates a real deposit address — spends real funds if you deposit)
+            Live mode: create a real deposit address
           </label>
-        ) : (
-          <p className="muted small">
-            Live quotes are disabled on this deployment (<code>CONFIRM_LIVE_INTENTS</code> is not <code>yes</code>).
+          <p className={confirmLive ? "mb-0 small" : "field-hint"}>
+            Anything you send to a live deposit address is a real transfer on mainnet. Leave this off to get an
+            estimate only.
           </p>
-        )}
-
-        <div className="row">
-          <button className="btn" onClick={quote} disabled={busy || tokens.length === 0}>
-            {busy ? "Quoting…" : "Get quote"}
-          </button>
-          <span className="muted small">{tokens.length} assets loaded from the live 1Click list</span>
         </div>
+      ) : (
+        <p className="muted small">Estimates only. No deposit address is created and no funds move.</p>
+      )}
 
-        {error ? <p className="error small">{error}</p> : null}
-
-        {result ? (
-          <div className="stack">
-            <p className={result.live ? "notice" : "notice"}>
-              {result.note} {result.fee_note}
-            </p>
-            <pre className="code">{JSON.stringify(result.quote, null, 2)}</pre>
-            {result.quote?.depositAddress ? (
-              <p className="small muted">
-                Deposit address: <span className="mono">{result.quote.depositAddress}</span>
-              </p>
-            ) : null}
-          </div>
+      <div className="row">
+        <button type="button" className="btn" onClick={quote} disabled={busy || tokens.length === 0}>
+          {busy ? "Getting estimate…" : liveMode ? "Get live quote" : "Get estimate"}
+        </button>
+        {tokens.length > 0 ? (
+          <span className="muted small">
+            {tokens.length.toLocaleString("en-US")} tokens across {chains.length} chains
+          </span>
         ) : null}
-      </section>
-    </div>
+      </div>
+
+      {error ? (
+        <p className="notice notice-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {result ? (
+        <div className="stack" role="status" aria-live="polite">
+          {result.live ? (
+            <div className="notice notice-warn">
+              <p className="notice-title">Live quote</p>
+              <p className="mb-0">
+                Sending funds to the deposit address below is a real transfer on mainnet. Send only the amount shown.
+              </p>
+            </div>
+          ) : (
+            <div className="notice notice-info">
+              <p className="notice-title">Estimate only</p>
+              <p className="mb-0">The route was checked and priced. No deposit address was created and no funds moved.</p>
+            </div>
+          )}
+
+          <div className="split">
+            <div className="split-cell">
+              <span>You send</span>
+              <strong className="num">
+                {sendAmount ?? "—"} {originSymbol}
+              </strong>
+              <span>
+                {chainName(quoted?.origin?.blockchain)}
+                {sendUsd ? ` · ${sendUsd}` : ""}
+              </span>
+            </div>
+            <div className="split-cell is-creator">
+              <span>You receive</span>
+              <strong className="num">
+                {receiveAmount ? `≈ ${receiveAmount}` : "—"} {destinationSymbol}
+              </strong>
+              <span>
+                {chainName(quoted?.destination?.blockchain)}
+                {receiveUsd ? ` · ${receiveUsd}` : ""}
+              </span>
+            </div>
+          </div>
+
+          <dl className="kv">
+            {minimumAmount ? (
+              <>
+                <dt>Minimum you receive</dt>
+                <dd className="num">
+                  {minimumAmount} {destinationSymbol}
+                </dd>
+              </>
+            ) : null}
+            {costUsd ? (
+              <>
+                <dt>Estimated routing cost</dt>
+                <dd className="num">{costUsd}, including fees and price movement</dd>
+              </>
+            ) : null}
+            <dt>Fees</dt>
+            <dd>
+              {jwtConfigured
+                ? "Partner pricing applies."
+                : "Standard pricing: NEAR Intents adds a small extra routing fee (around 0.2–0.25%)."}
+            </dd>
+            {duration ? (
+              <>
+                <dt>Estimated time</dt>
+                <dd>{duration}</dd>
+              </>
+            ) : null}
+            {result.quote?.depositAddress ? (
+              <>
+                <dt>Deposit address</dt>
+                <dd className="mono">{result.quote.depositAddress}</dd>
+              </>
+            ) : null}
+            {result.quote?.depositMemo ? (
+              <>
+                <dt>Deposit memo</dt>
+                <dd className="mono">{result.quote.depositMemo}</dd>
+              </>
+            ) : null}
+          </dl>
+
+          <details className="details">
+            <summary>Technical details</summary>
+            <div className="details-body">
+              <p>
+                Amount sent to the quote service in the token&apos;s smallest units:{" "}
+                <span className="mono">{quoted?.amountBase ?? "—"}</span>. Full response from the NEAR Intents 1Click
+                API:
+              </p>
+              <pre className="code">{JSON.stringify(result.quote, null, 2)}</pre>
+            </div>
+          </details>
+        </div>
+      ) : null}
+    </section>
   );
 }
