@@ -1,0 +1,78 @@
+/* Checkout page layout and the few pieces the shared design system does not cover. */
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (min-width: 920px) {
+  .layout {
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  }
+}
+
+.headMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.headPrice {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+.total {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+}
+
+.totalLabel {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.totalValue {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.cellAccount {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--faint);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}

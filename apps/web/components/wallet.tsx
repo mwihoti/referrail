@@ -89,9 +89,14 @@ export function WalletProvider({
     (async () => {
       try {
         const module = (await import("@hot-labs/near-connect")) as unknown as {
-          NearConnector: new (options: { network: string }) => ConnectorLike;
+          NearConnector: new (options: {
+            network: string;
+            features?: { signAndSendTransaction?: boolean };
+          }) => ConnectorLike;
         };
-        connector = new module.NearConnector({ network });
+        // Only list wallets that can sign and send transactions. The library already hides
+        // wallets that don't support the test network when network is "testnet".
+        connector = new module.NearConnector({ network, features: { signAndSendTransaction: true } });
         connector.on("wallet:signIn", handleSignIn);
         connector.on("wallet:signOut", handleSignOut);
         connectorRef.current = connector;
@@ -104,7 +109,9 @@ export function WalletProvider({
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Wallet connector failed to load");
+          setError(
+            `Wallet sign-in couldn't load${err instanceof Error && err.message ? `: ${err.message}` : "."} Refresh the page to try again.`,
+          );
         }
       } finally {
         if (!cancelled) setReady(true);
@@ -125,14 +132,15 @@ export function WalletProvider({
     setConnecting(true);
     try {
       const connector = connectorRef.current;
-      if (!connector) throw new Error("Wallet connector is still loading");
+      if (!connector) throw new Error("Wallet sign-in is still loading. Try again in a moment.");
       const wallet = await connector.connect();
       if (wallet) {
         const accounts = await wallet.getAccounts();
         setAccountId(accounts[0]?.accountId ?? "");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not connect a wallet");
+      const reason = err instanceof Error ? err.message : "";
+      setError(reason ? `Couldn't connect your wallet: ${reason}` : "Couldn't connect your wallet. Please try again.");
     } finally {
       setConnecting(false);
     }
@@ -159,9 +167,9 @@ export function WalletProvider({
       depositYocto?: string;
     }) => {
       const connector = connectorRef.current;
-      if (!connector) throw new Error("Wallet connector is still loading");
+      if (!connector) throw new Error("Wallet sign-in is still loading. Try again in a moment.");
       const target = params.receiverId ?? contractId;
-      if (!target) throw new Error("No contract id configured");
+      if (!target) throw new Error("This service is temporarily unavailable. Please try again shortly.");
       const wallet = await connector.wallet();
       const result = await wallet.signAndSendTransaction({
         receiverId: target,
@@ -209,37 +217,45 @@ export function useWallet(): WalletContextValue {
 export function WalletBar({ demoAccounts }: { demoAccounts?: { merchant: string | null; creator: string | null; buyer: string | null } }) {
   const { accountId, connect, disconnect, connecting, error, network } = useWallet();
   return (
-    <div className="walletbar">
+    <div className="walletbar" role="region" aria-label="Wallet">
       <div className="walletbar-info">
         {accountId ? (
           <>
-            <span className="dot dot-on" />
-            <span className="mono">{accountId}</span>
-            <span className="badge">{network}</span>
+            <span className="dot dot-on" aria-hidden="true" />
+            <div className="walletbar-body">
+              <span className="small muted">Signed in as</span>
+              <span className="mono">{accountId}</span>
+            </div>
+            <span className={`badge ${network === "testnet" ? "badge-warn" : "badge-ok"}`}>
+              {network === "testnet" ? "Test network" : "Mainnet"}
+            </span>
           </>
         ) : (
           <>
-            <span className="dot" />
-            <span>No wallet connected</span>
-            {demoAccounts ? (
-              <span className="muted small">
-                demo personas: {demoAccounts.merchant ?? "—"} / {demoAccounts.creator ?? "—"} /{" "}
-                {demoAccounts.buyer ?? "—"}
-              </span>
-            ) : null}
+            <span className="dot" aria-hidden="true" />
+            <div className="walletbar-body">
+              <span>Connect a NEAR wallet to continue</span>
+              {demoAccounts ? (
+                <span className="muted small">No wallet? You can continue with a sandbox account.</span>
+              ) : null}
+            </div>
           </>
         )}
       </div>
       {accountId ? (
-        <button className="btn btn-ghost" onClick={disconnect}>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={disconnect}>
           Sign out
         </button>
       ) : (
-        <button className="btn" onClick={connect} disabled={connecting}>
-          {connecting ? "Connecting…" : "Connect NEAR wallet"}
+        <button type="button" className="btn btn-sm" onClick={connect} disabled={connecting}>
+          {connecting ? "Connecting…" : "Connect wallet"}
         </button>
       )}
-      {error ? <p className="error small">{error}</p> : null}
+      {error ? (
+        <p className="error small walletbar-error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
