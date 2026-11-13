@@ -75,16 +75,18 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releas
 cd contracts/referrail && cargo test
 ```
 
-**Expect:** `all tests passed` — 20 tests covering the fee math, no-referral split, oversized
-commission, wrong amount/token, unknown code refunds, refund-then-second-refund panic, hold gating,
-double release, paused offers, allow-lists, duplicate codes, economics snapshotting and the
-creator-sales index.
+**Expect:** `all tests passed` — 26 tests covering the fee math, no-referral split, oversized
+commission, wrong amount/token, unknown code refunds, self-referral refusal, refund-then-second-refund
+panic, hold gating, double release, paused offers, allow-lists, duplicate codes, re-claiming your own
+code, creators unable to raise their own commission, merchant-set VIP rates, economics snapshotting
+and the creator-sales index.
 
 ```bash
 cd ../test-ft && cargo test
 ```
 
-**Expect:** 4 tests covering transfers, the 1-yoctoNEAR rule, unregistered recipients and owner-only minting.
+**Expect:** 7 tests covering transfers, the 1-yoctoNEAR rule, unregistered recipients, owner-only minting,
+and `ft_resolve_transfer` (keep on accept, refund on refusal, refund when the receiver panics).
 
 ### 2. Configure
 
@@ -93,29 +95,32 @@ npm install                     # root workspace (web app + scripts)
 cp .env.example apps/web/.env.local
 ```
 
-Fill `apps/web/.env.local` with **throwaway testnet** accounts. Create them with the faucet:
+Fill `apps/web/.env.local` with **throwaway testnet** accounts. Create them with the faucet
+(near-cli-rs; pick your own names if these are taken):
 
 ```bash
-near create-account referrail-dev.testnet --useFaucet
-near create-account rr-biz.testnet --useFaucet
-near create-account rr-creator.testnet --useFaucet
-near create-account rr-buyer.testnet --useFaucet
-near create-account rr-relayer.testnet --useFaucet
+for a in referrail-dev rr-biz rr-creator rr-buyer rr-relayer; do
+  near account create-account sponsor-by-faucet-service "$a.testnet" \
+    autogenerate-new-keypair save-to-legacy-keychain network-config testnet create
+done
 ```
+
+Each account's key is saved to `~/.near-credentials/testnet/<account>.json` (`private_key`). Put the
+account ids and keys into `NEAR_DEPLOYER_*` (= `referrail-dev`), `NEAR_BIZ_*`, `NEAR_CREATOR_*`,
+`NEAR_BUYER_*` and `NEAR_RELAYER_*`, and set `NEAR_CONTRACT_ID` / `NEXT_PUBLIC_NEAR_CONTRACT_ID` /
+`NEAR_TREASURY_ACCOUNT` to the deployer account and `NEAR_FT_ACCOUNT` to `usdc.<deployer>`.
 
 Never put a mainnet payout key in this file. `.env.local` is gitignored.
 
 ### 3. Deploy the contracts (testnet)
 
 ```bash
-NEAR_ACCOUNT=referrail-dev.testnet \
-NEAR_FT_ACCOUNT=usdc.referrail-dev.testnet \
-NEAR_TREASURY_ACCOUNT=referrail-dev.testnet \
-./scripts/deploy-testnet.sh
+NEAR_ACCOUNT=referrail-dev.testnet ./scripts/deploy-testnet.sh
 ```
 
 The script builds both contracts with `cargo near build`, deploys + initialises the escrow (2% fee),
-deploys the demo token, and whitelists the token on the escrow. It refuses to run unless
+creates the `usdc.<account>` sub-account, deploys + initialises the demo token there, and whitelists
+the token on the escrow. It uses near-cli-rs with the legacy keychain and refuses to run unless
 `NEAR_NETWORK=testnet`.
 
 ### 4. Seed the demo
@@ -153,7 +158,7 @@ Connect; the wallet path is the one a real merchant would use.
    *Expect:* a green notice saying the relayer paid the gas (mode `meta-tx`) and a copyable link
    `/offer/<id>?ref=ada`. No NEAR was deducted from the creator.
 5. **Open that link.** The split preview shows merchant / creator / protocol.
-   *Expect:* 8.5 / 1.5 / 0.2 `tUSDC` for a 10 `tUSDC` sale.
+   *Expect:* 8.3 / 1.5 / 0.2 `tUSDC` for a 10 `tUSDC` sale.
 6. **Click Pay as demo buyer.**
    *Expect:* a sale card appears (`Pending`), then **Release the split now** becomes available
    because the seed uses a 0-hour hold.
@@ -202,11 +207,14 @@ Server-only keys are read in route handlers and never shipped to the browser.
 **Admin** — `set_paused`, `whitelist_token`, `remove_token`, `set_treasury`, `set_protocol_fee_bps`
 (capped at 200 bps; applies to new offers only).
 
-**Business** — `create_offer`, `update_offer`, `pause_offer`, `refund`.
+**Business** — `create_offer`, `update_offer`, `pause_offer`, `refund`,
+`set_creator_commission(offer_id, code, bps?)` (merchant-only per-creator rate, e.g. a VIP commission).
 
 **Creators** — `register_creator(offer_id, code, payout_account?, commission_bps_override?)`.
-No deposit, so it is meta-transaction friendly. One link per creator per offer; re-claiming replaces
-the code.
+No deposit, so it is meta-transaction friendly. One link per creator per offer; claiming a new code
+replaces the old one, and re-claiming your own code updates it (keeping any merchant-set rate). A
+creator's override may only **lower** the offer's commission, never raise it. A buyer who is the
+code's creator or its payout account is refused (no self-referral cashback).
 
 **Buying** — `ft_on_transfer(sender_id, amount, msg)`. Returns `0` to accept, or the full amount to
 refuse (unknown offer, wrong token, wrong amount, paused offer, unknown code).
@@ -285,23 +293,24 @@ DISCLOSURE.md             prior-work disclosure (Q-002)
 
 ## Status: what was verified, and what needs your machine
 
-Verified in the environment this repository was assembled in:
+Live on NEAR testnet:
 
-- `cd contracts/referrail && cargo test` — all 20 tests pass.
-- `cd contracts/test-ft && cargo test` — all 4 tests pass.
-- `npm run typecheck` and `npm run build` — clean production build (all 23 routes compile).
+| | Account | Explorer |
+|---|---|---|
+| Escrow contract | `referrail-demo.testnet` | https://testnet.nearblocks.io/address/referrail-demo.testnet |
+| Demo token (`tUSDC`) | `usdc.referrail-demo.testnet` | https://testnet.nearblocks.io/address/usdc.referrail-demo.testnet |
 
-Not verified here, because the sandbox had no `wasm32` standard library and no funded testnet accounts:
+Verified against that deployment with the commands in this README:
 
-- `cargo near build non-reproducible-wasm` and the wasm artifacts,
-- `scripts/deploy-testnet.sh` against a live testnet,
-- `npm run seed` / `npm run smoke` against deployed contracts,
-- a live 1Click quote (needs outbound access to `1click.chaindefuser.com`; the code path is a thin
-  proxy over the documented endpoints).
-
-Run those five steps before recording the demo; they are the same commands in the README above.
-Because host tests compile with near-sdk's `unit-testing` feature, a host-only pass does not prove the
-wasm build — `cargo near build` is the gate.
+- `cargo test` — 26 escrow tests and 7 token tests pass.
+- `cargo near build non-reproducible-wasm` — both wasm artifacts build; `scripts/deploy-testnet.sh`
+  deploys and initialises them.
+- `npm run seed`, then `npm run smoke` — `[PASS] all on-chain assertions passed`: split math, sale
+  record, unknown-code refusal and refund, release paying all three parties, double-release refusal,
+  and a gasless claim through `/api/relay`. The smoke test puts the seeded `ada` code back when done.
+- The "Try it" path above through the app's routes: publish, gasless claim, preview, pay, release,
+  refund, and a dry 1Click quote (ETH USDC → NEAR USDT) from the live token list.
+- `npm run typecheck` and `npm run build` — clean production build.
 
 ---
 

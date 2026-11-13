@@ -170,6 +170,10 @@ impl TestFt {
     }
 
     /// Refunds the unused part of a `ft_transfer_call` to the sender.
+    ///
+    /// Per NEP-141, the receiver's `ft_on_transfer` returns the amount it did
+    /// NOT use. If the receiver call failed, the whole amount is unused. The
+    /// return value is the amount that was actually used (kept by the receiver).
     #[private]
     pub fn ft_resolve_transfer(
         &mut self,
@@ -177,24 +181,23 @@ impl TestFt {
         sender_id: AccountId,
         amount: U128,
     ) -> U128 {
-        let used: u128 = match env::promise_result(0) {
-            near_sdk::PromiseResult::Successful(value) => {
-                serde_json::from_slice::<U128>(&value).map(|v| v.0).unwrap_or(0)
-            }
-            _ => 0,
+        let unused: u128 = match env::promise_result(0) {
+            near_sdk::PromiseResult::Successful(value) => serde_json::from_slice::<U128>(&value)
+                .map(|v| v.0.min(amount.0))
+                .unwrap_or(amount.0),
+            _ => amount.0,
         };
-        let unused = amount.0.saturating_sub(used);
+        let mut refunded = 0;
         if unused > 0 {
             let receiver_balance = self.balances.get(&receiver_id).copied().unwrap_or(0);
-            let refundable = unused.min(receiver_balance);
-            if refundable > 0 {
-                self.balances.insert(receiver_id, receiver_balance - refundable);
+            refunded = unused.min(receiver_balance);
+            if refunded > 0 {
+                self.balances.insert(receiver_id, receiver_balance - refunded);
                 let sender_balance = self.balances.get(&sender_id).copied().unwrap_or(0);
-                self.balances.insert(sender_id, sender_balance + refundable);
+                self.balances.insert(sender_id, sender_balance + refunded);
             }
-            return U128(unused);
         }
-        U128(0)
+        U128(amount.0 - refunded)
     }
 
     fn internal_transfer(&mut self, sender_id: &AccountId, receiver_id: &AccountId, amount: u128) {
@@ -238,6 +241,53 @@ mod tests {
             6,
             U128(1_000_000_000),
         )
+    }
+
+    /// Simulates the token's own `ft_resolve_transfer` callback after the
+    /// receiver's `ft_on_transfer` produced `result`, with `amount` already
+    /// moved from owner to escrow.
+    fn resolve_with(result: near_sdk::PromiseResult, amount: u128) -> (TestFt, U128) {
+        let mut token = token();
+        testing_env!(ctx("owner.testnet", STORAGE_DEPOSIT).build());
+        token.storage_deposit(Some("escrow.testnet".parse().unwrap()));
+        testing_env!(ctx("owner.testnet", 1).build());
+        token.ft_transfer("escrow.testnet".parse().unwrap(), U128(amount), None);
+        testing_env!(
+            ctx("usdc.testnet", 0).build(),
+            near_sdk::test_vm_config(),
+            near_sdk::RuntimeFeesConfig::test(),
+            Default::default(),
+            vec![result]
+        );
+        let used = token.ft_resolve_transfer(
+            "escrow.testnet".parse().unwrap(),
+            "owner.testnet".parse().unwrap(),
+            U128(amount),
+        );
+        (token, used)
+    }
+
+    #[test]
+    fn resolve_keeps_funds_when_receiver_accepts() {
+        let (token, used) = resolve_with(near_sdk::PromiseResult::Successful(b"\"0\"".to_vec()), 10_000_000);
+        assert_eq!(used.0, 10_000_000);
+        assert_eq!(token.ft_balance_of("escrow.testnet".parse().unwrap()).0, 10_000_000);
+    }
+
+    #[test]
+    fn resolve_refunds_when_receiver_refuses() {
+        let (token, used) =
+            resolve_with(near_sdk::PromiseResult::Successful(b"\"10000000\"".to_vec()), 10_000_000);
+        assert_eq!(used.0, 0);
+        assert_eq!(token.ft_balance_of("escrow.testnet".parse().unwrap()).0, 0);
+        assert_eq!(token.ft_balance_of("owner.testnet".parse().unwrap()).0, 1_000_000_000);
+    }
+
+    #[test]
+    fn resolve_refunds_when_receiver_panics() {
+        let (token, used) = resolve_with(near_sdk::PromiseResult::Failed, 10_000_000);
+        assert_eq!(used.0, 0);
+        assert_eq!(token.ft_balance_of("owner.testnet".parse().unwrap()).0, 1_000_000_000);
     }
 
     #[test]

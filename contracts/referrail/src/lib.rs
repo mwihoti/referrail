@@ -407,15 +407,23 @@ impl Contract {
                 "this account is not on the offer allow-list"
             );
         }
-        let effective_bps = commission_bps_override.unwrap_or(offer.commission_bps);
-        let fees_fit = (effective_bps as u32 + offer.protocol_fee_bps as u32) < BPS_DENOMINATOR as u32;
-        require!(fees_fit, "commission + protocol fee must stay below 100%");
-        require!(
-            self.creator_codes
-                .get(&code_key(offer_id, &code))
-                .is_none(),
-            "referral code already claimed"
-        );
+        // A creator may lower their own commission but never raise it: the rate
+        // is the merchant's to set (see `set_creator_commission`).
+        if let Some(bps) = commission_bps_override {
+            require!(
+                bps <= offer.commission_bps,
+                "creators cannot raise their own commission; ask the merchant"
+            );
+        }
+        // Re-claiming your own code is allowed (it updates payout/override);
+        // a code held by another creator is not.
+        let mut kept_override = None;
+        if let Some(existing) = self.creator_codes.get(&code_key(offer_id, &code)) {
+            require!(existing.account == account, "referral code already claimed");
+            // Re-claiming keeps a merchant-set rate unless the creator lowers it.
+            kept_override = existing.commission_bps_override;
+        }
+        let commission_bps_override = commission_bps_override.or(kept_override);
 
         // A creator keeps one link per offer; re-claiming replaces the old code.
         let acct_key = account_key(offer_id, &account);
@@ -438,6 +446,37 @@ impl Contract {
         env::log_str(&format!(
             "CREATOR_REGISTERED offer={} creator={} code={}",
             offer_id, account, code
+        ));
+        link
+    }
+
+    /// Merchant-only: give one creator's code a custom commission (e.g. a VIP
+    /// rate), or clear it with `None` to fall back to the offer's rate. Applies
+    /// to future sales only; pending sales keep their snapshotted split.
+    pub fn set_creator_commission(
+        &mut self,
+        offer_id: u64,
+        code: String,
+        commission_bps_override: Option<u16>,
+    ) -> CreatorLink {
+        let offer = self.offers.get(&offer_id).expect("offer not found").clone();
+        require!(
+            offer.merchant == env::predecessor_account_id(),
+            "only the merchant can set a creator's commission"
+        );
+        if let Some(bps) = commission_bps_override {
+            let fees_fit = (bps as u32 + offer.protocol_fee_bps as u32) < BPS_DENOMINATOR as u32;
+            require!(fees_fit, "commission + protocol fee must stay below 100%");
+        }
+        let key = code_key(offer_id, &code);
+        let mut link = self.creator_codes.get(&key).expect("referral code not found").clone();
+        link.commission_bps_override = commission_bps_override;
+        self.creator_codes.insert(key, link.clone());
+        self.creator_accounts
+            .insert(account_key(offer_id, &link.account), link.clone());
+        env::log_str(&format!(
+            "CREATOR_COMMISSION offer={} code={} bps={:?}",
+            offer_id, code, commission_bps_override
         ));
         link
     }
@@ -492,6 +531,15 @@ impl Contract {
                 }
             },
         };
+
+        // A buyer cannot earn commission on their own purchase, either as the
+        // registered creator or as the creator's payout account.
+        if let Some(link) = creator_link.as_ref() {
+            if link.account == sender_id || link.payout_account == sender_id {
+                env::log_str("REJECT self-referral");
+                return PromiseOrValue::Value(amount);
+            }
+        }
 
         let creator_bps = creator_link
             .as_ref()
@@ -909,6 +957,36 @@ mod tests {
         assert_eq!(contract.stats().sale_count, 0);
     }
 
+    // 4b2. A creator cannot buy through their own code (self-referral cashback),
+    // and neither can the account that receives that creator's payouts.
+    #[test]
+    fn self_referral_is_refunded() {
+        let mut contract = contract();
+        let offer_id = offer_fixture(&mut contract);
+        claim(&mut contract, offer_id, "ada");
+        testing_env!(ctx(TOKEN, ts(20)).build());
+        let result = contract.ft_on_transfer(
+            id(CREATOR),
+            U128(PRICE),
+            format!(r#"{{"offer_id":{},"ref":"ada"}}"#, offer_id),
+        );
+        assert_unused(result, PRICE);
+
+        testing_env!(ctx(OTHER, ts(21)).build());
+        contract.register_creator(offer_id, "bob".to_string(), Some(id(BUYER)), None);
+        testing_env!(ctx(TOKEN, ts(22)).build());
+        let result = contract.ft_on_transfer(
+            id(BUYER),
+            U128(PRICE),
+            format!(r#"{{"offer_id":{},"ref":"bob"}}"#, offer_id),
+        );
+        assert_unused(result, PRICE);
+        assert_eq!(contract.stats().sale_count, 0);
+
+        // The same buyer can still purchase through someone else's code.
+        buy(&mut contract, offer_id, Some("ada"), ts(23));
+    }
+
     // 4c. Buying with another FT is refused.
     #[test]
     fn wrong_token_is_refunded() {
@@ -1107,6 +1185,19 @@ mod tests {
         contract.register_creator(offer_id, "ada".to_string(), None, None);
     }
 
+    #[test]
+    fn creator_can_reclaim_own_code() {
+        let mut contract = contract();
+        let offer_id = offer_fixture(&mut contract);
+        claim(&mut contract, offer_id, "ada");
+        testing_env!(ctx(CREATOR, ts(12)).build());
+        let link = contract.register_creator(offer_id, "ada".to_string(), Some(id(OTHER)), None);
+        assert_eq!(link.payout_account, id(OTHER));
+        let stored = contract.get_creator(offer_id, "ada".to_string()).unwrap();
+        assert_eq!(stored.account, id(CREATOR));
+        assert_eq!(stored.payout_account, id(OTHER));
+    }
+
     // 10. Editing an offer never rewrites an in-flight sale's economics.
     #[test]
     fn offer_update_does_not_change_pending_sale() {
@@ -1139,12 +1230,56 @@ mod tests {
         let mut contract = contract();
         let offer_id = offer_fixture(&mut contract);
         testing_env!(ctx(CREATOR, ts(11)).build());
-        contract.register_creator(offer_id, "vip".to_string(), None, Some(2_500));
+        contract.register_creator(offer_id, "vip".to_string(), None, None);
+        testing_env!(ctx(MERCHANT, ts(11)).build());
+        contract.set_creator_commission(offer_id, "vip".to_string(), Some(2_500));
         testing_env!(ctx(BUYER, ts(12)).build());
         let preview = contract.preview_split(offer_id, U128(PRICE), Some("vip".to_string()));
         assert_eq!(preview.creator_amount.0, 2_500_000);
         assert_eq!(preview.merchant_amount.0, 7_300_000);
         assert_eq!(preview.protocol_amount.0, 200_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "creators cannot raise their own commission")]
+    fn creator_cannot_raise_own_commission() {
+        let mut contract = contract();
+        let offer_id = offer_fixture(&mut contract);
+        testing_env!(ctx(CREATOR, ts(11)).build());
+        contract.register_creator(offer_id, "greedy".to_string(), None, Some(9_000));
+    }
+
+    #[test]
+    fn creator_can_lower_own_commission() {
+        let mut contract = contract();
+        let offer_id = offer_fixture(&mut contract);
+        testing_env!(ctx(CREATOR, ts(11)).build());
+        contract.register_creator(offer_id, "kind".to_string(), None, Some(500));
+        let preview = contract.preview_split(offer_id, U128(PRICE), Some("kind".to_string()));
+        assert_eq!(preview.creator_amount.0, 500_000);
+    }
+
+    #[test]
+    fn reclaim_keeps_merchant_vip_rate() {
+        let mut contract = contract();
+        let offer_id = offer_fixture(&mut contract);
+        claim(&mut contract, offer_id, "ada");
+        testing_env!(ctx(MERCHANT, ts(12)).build());
+        contract.set_creator_commission(offer_id, "ada".to_string(), Some(2_500));
+        testing_env!(ctx(CREATOR, ts(13)).build());
+        let link = contract.register_creator(offer_id, "ada".to_string(), Some(id(OTHER)), None);
+        assert_eq!(link.commission_bps_override, Some(2_500));
+        assert_eq!(link.payout_account, id(OTHER));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the merchant can set a creator's commission")]
+    fn only_merchant_sets_creator_commission() {
+        let mut contract = contract();
+        let offer_id = offer_fixture(&mut contract);
+        claim(&mut contract, offer_id, "ada");
+        testing_env!(ctx(CREATOR, ts(12)).build());
+        contract.set_creator_commission(offer_id, "ada".to_string(), Some(5_000));
     }
 
     // 12. Protocol fee cap at init and later.
