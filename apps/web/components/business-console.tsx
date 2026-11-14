@@ -104,6 +104,7 @@ export function BusinessConsole({
   decimals,
   symbol,
   contractId,
+  tokenAccount,
   demoMode,
   demoAccounts,
   protocolFeeBps = null,
@@ -113,6 +114,8 @@ export function BusinessConsole({
   decimals: number;
   symbol: string;
   contractId: string;
+  /** NEP-141 token the offer is priced in (the contract requires it on create_offer). */
+  tokenAccount: string;
   demoMode: boolean;
   demoAccounts: { merchant: string | null; creator: string | null; buyer: string | null };
   /** Live service fee from the contract, or null when it couldn't be read. */
@@ -225,7 +228,6 @@ export function BusinessConsole({
         storeUrl: storeUrl.trim() || null,
         imageUrl: imageUrl.trim() || null,
       }),
-      token: undefined,
       price: toSmallestUnits(price, decimals),
       commission_bps: commissionBps,
       refund_hold_hours: Number(draft.holdHours) || 0,
@@ -241,12 +243,13 @@ export function BusinessConsole({
     try {
       const args = buildArgs();
       if (accountId) {
+        if (!tokenAccount) throw new FormError("Publishing is temporarily unavailable. Please try again shortly.");
         const result = await call({
           methodName: "create_offer",
           args: {
             title: args.title,
             description: args.description,
-            token: undefined,
+            token: tokenAccount,
             price: args.price,
             commission_bps: args.commission_bps,
             refund_hold_ns: Math.round(args.refund_hold_hours * 3_600_000_000_000),

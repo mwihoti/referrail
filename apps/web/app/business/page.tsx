@@ -42,6 +42,7 @@ export default async function BusinessPage() {
         decimals={tokenMeta?.decimals ?? config.tokenDecimals}
         symbol={tokenMeta?.symbol ?? config.tokenSymbol}
         contractId={config.contractId}
+        tokenAccount={config.ftAccount}
         demoMode={config.demoMode}
         demoAccounts={{
           merchant: demoAccount("merchant")?.account ?? null,
