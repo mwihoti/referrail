@@ -6,6 +6,10 @@ import { useState } from "react";
 import { WalletBar, useWallet } from "@/components/wallet";
 import { TxLink } from "@/components/explorer";
 import { friendlyReason } from "@/components/friendly-error";
+import { BuyButtonSnippet } from "@/components/buy-button-snippet";
+import { OfferImage } from "@/components/offer-image";
+import { ShopifyImport, type ImportedProduct } from "@/components/shopify-import";
+import { buildOfferDescription, isSafeHttpsUrl, parseOfferDescription } from "@/lib/offer-meta";
 import { bpsToPercent, formatDate, formatUnits, toSmallestUnits } from "@/lib/format";
 import type { Offer, Sale } from "@/lib/types";
 
@@ -35,6 +39,21 @@ const EXAMPLE_PROMPTS = [
   "I sell a $35 photography preset pack, creators get 20%, refunds allowed for 24 hours",
   "I sell a $12 monthly newsletter, creators get 30%, no refund window",
 ];
+
+/** Cut text to at most maxBytes UTF-8 bytes without splitting a character. The contract limits titles to 120 bytes. */
+function truncateBytes(value: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).length <= maxBytes) return value;
+  let out = "";
+  let used = 0;
+  for (const char of value) {
+    const size = encoder.encode(char).length;
+    if (used + size > maxBytes) break;
+    out += char;
+    used += size;
+  }
+  return out.trimEnd();
+}
 
 /** Validation problems the person can fix in the form. Shown as-is, without an error prefix. */
 class FormError extends Error {}
@@ -110,10 +129,35 @@ export function BusinessConsole({
   const [notice, setNotice] = useState<string | null>(null);
   const [lastHash, setLastHash] = useState<string | undefined>();
   const [feedbackScope, setFeedbackScope] = useState<"compose" | "offers">("compose");
+  const [storeUrl, setStoreUrl] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
+  const [importedFrom, setImportedFrom] = useState<string | null>(null);
 
   const accountSuffix = network === "mainnet" ? "near" : "testnet";
   const exampleAccount = `your-shop.${accountSuffix}`;
   const hasDraft = Boolean(draft.title || draft.description);
+  const storeUrlInvalid = storeUrl.trim() !== "" && !isSafeHttpsUrl(storeUrl.trim());
+  const imageUrlInvalid = imageUrl.trim() !== "" && !isSafeHttpsUrl(imageUrl.trim());
+
+  function applyImportedProduct(product: ImportedProduct, store: string) {
+    setDraft((current) => ({
+      ...current,
+      title: truncateBytes(product.title.trim(), 120),
+      description: product.description,
+      price: product.price,
+    }));
+    setStoreUrl(product.productUrl);
+    setImageUrl(product.imageUrl ?? "");
+    setImportedFrom(store);
+    setDraftSource(null);
+    setAssumptions([]);
+    setError(null);
+    setNotice(null);
+    setFeedbackScope("compose");
+    requestAnimationFrame(() => {
+      document.getElementById("review-title")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
 
   async function requestDraft() {
     setFeedbackScope("compose");
@@ -149,6 +193,10 @@ export function BusinessConsole({
         holdHours: String(payload.draft.refund_hold_hours),
         payoutAccount: payload.draft.payout_account,
       });
+      // A fresh draft replaces an earlier import, so drop its store link and image.
+      setStoreUrl("");
+      setImageUrl("");
+      setImportedFrom(null);
       setDraftSource({ source: payload.source ?? "unknown", note: payload.note ?? "" });
       setAssumptions(payload.draft.assumptions ?? []);
     } catch (err) {
@@ -169,9 +217,14 @@ export function BusinessConsole({
     if (commissionBps + 200 >= 10_000) {
       throw new FormError("The creator commission plus the service fee must stay below 100%.");
     }
+    if (storeUrlInvalid) throw new FormError("Enter a public store link that starts with https://, or leave it empty.");
+    if (imageUrlInvalid) throw new FormError("Enter a public product image link that starts with https://, or leave it empty.");
     return {
       title: draft.title.trim(),
-      description: draft.description.trim(),
+      description: buildOfferDescription(draft.description.trim(), {
+        storeUrl: storeUrl.trim() || null,
+        imageUrl: imageUrl.trim() || null,
+      }),
       token: undefined,
       price: toSmallestUnits(price, decimals),
       commission_bps: commissionBps,
@@ -477,6 +530,8 @@ export function BusinessConsole({
           </div>
         </div>
 
+        <ShopifyImport onUse={applyImportedProduct} disabled={busy !== null} symbol={symbol} />
+
         {hasDraft ? (
           <section className="card card-accent" aria-labelledby="review-title">
             <div className="card-head">
@@ -487,6 +542,11 @@ export function BusinessConsole({
                   Check the terms below and edit anything you like. Nothing is published until you confirm.
                 </p>
               </div>
+              {importedFrom ? (
+                <span className="badge badge-info">
+                  Imported from <span className="mono">{importedFrom}</span>
+                </span>
+              ) : null}
             </div>
 
             <div className="stack">
@@ -555,6 +615,51 @@ export function BusinessConsole({
                   onChange={(e) => setDraft({ ...draft, description: e.target.value })}
                 />
               </div>
+              <div className="form-grid">
+                <div className="field">
+                  <label htmlFor="store-url">Store link (optional)</label>
+                  <input
+                    id="store-url"
+                    type="url"
+                    inputMode="url"
+                    placeholder="https://your-store.myshopify.com/products/your-product"
+                    value={storeUrl}
+                    onChange={(e) => setStoreUrl(e.target.value)}
+                    aria-describedby="store-url-hint"
+                    aria-invalid={storeUrlInvalid || undefined}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <p className="field-hint" id="store-url-hint">
+                    {storeUrlInvalid
+                      ? "Use a full public link that starts with https://."
+                      : "Where buyers can see the product. Shown on the offer page as \"View on store\"."}
+                  </p>
+                </div>
+                <div className="field">
+                  <label htmlFor="image-url">Product image (optional)</label>
+                  <input
+                    id="image-url"
+                    type="url"
+                    inputMode="url"
+                    placeholder="https://cdn.shopify.com/…/product.jpg"
+                    value={imageUrl}
+                    onChange={(e) => setImageUrl(e.target.value)}
+                    aria-describedby="image-url-hint"
+                    aria-invalid={imageUrlInvalid || undefined}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <p className="field-hint" id="image-url-hint">
+                    {imageUrlInvalid
+                      ? "Use a full public image link that starts with https://."
+                      : "A direct https link to an image. Shown on offer cards and at checkout."}
+                  </p>
+                </div>
+              </div>
+              {imageUrl.trim() && !imageUrlInvalid ? (
+                <OfferImage key={imageUrl.trim()} src={imageUrl.trim()} alt={draft.title || "Product image"} variant="thumb" />
+              ) : null}
 
               <div className="grid grid-2">
                 <div className="card card-flat card-tight">
@@ -720,9 +825,11 @@ export function BusinessConsole({
           offers.map((offer) => {
             const sales = salesByOffer[offer.id] ?? [];
             const isOwner = accountId === offer.merchant;
+            const meta = parseOfferDescription(offer.description);
             return (
               <article className="card stack" key={offer.id} aria-labelledby={`offer-${offer.id}-title`}>
                 <div className="row-between row-top">
+                  {meta.imageUrl ? <OfferImage src={meta.imageUrl} alt={offer.title} variant="thumb" /> : null}
                   <div className="stack-sm grow">
                     <div className="row">
                       {offer.paused ? (
@@ -736,6 +843,15 @@ export function BusinessConsole({
                     <h3 className="mt-0 mb-0" id={`offer-${offer.id}-title`}>
                       {offer.title}
                     </h3>
+                    {meta.body ? <p className="muted small clamp mb-0">{meta.body}</p> : null}
+                    {meta.storeUrl && meta.storeHost ? (
+                      <p className="small mb-0">
+                        <span className="badge">Store link · {meta.storeHost}</span>{" "}
+                        <a className="link" href={meta.storeUrl} target="_blank" rel="noopener noreferrer">
+                          View on store
+                        </a>
+                      </p>
+                    ) : null}
                   </div>
                   <div className="row">
                     <Link className="btn btn-ghost btn-sm" href={`/offer/${offer.id}`}>
@@ -774,6 +890,8 @@ export function BusinessConsole({
                   <dt>Business account</dt>
                   <dd className="mono">{offer.merchant}</dd>
                 </dl>
+
+                <BuyButtonSnippet offerId={offer.id} price={formatUnits(offer.price, decimals)} symbol={symbol} />
 
                 {sales.length === 0 ? (
                   <div className="empty">

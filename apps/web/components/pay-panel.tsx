@@ -7,6 +7,7 @@ import { refundWindowLabel } from "@/components/offer-format";
 import styles from "@/components/offer.module.css";
 import { WalletBar, useWallet } from "@/components/wallet";
 import { bpsToPercent, formatDate, formatUnits } from "@/lib/format";
+import { parseOfferDescription } from "@/lib/offer-meta";
 import type { Offer, Sale, SplitPreview } from "@/lib/types";
 
 function reason(err: unknown, fallback: string): string {
@@ -59,6 +60,8 @@ export function PayPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ title: string; body?: string } | null>(null);
   const [hash, setHash] = useState<string | undefined>();
+  const [paid, setPaid] = useState(false);
+  const meta = parseOfferDescription(offer.description);
 
   const refreshPreview = useCallback(
     async (code: string) => {
@@ -120,6 +123,7 @@ export function PayPanel({
           depositYocto: "1",
         });
         setHash(result.hash);
+        setPaid(true);
         setNotice({
           title: "Payment sent",
           body: "Your payment is held in escrow while it's confirmed. You can check its progress on the network explorer.",
@@ -133,6 +137,7 @@ export function PayPanel({
         const payload = (await response.json()) as { error?: string; sale_id?: number | null; outcome?: { transaction?: { hash?: string } } };
         if (!response.ok) throw new Error(payload.error ?? "Something went wrong");
         setHash(payload.outcome?.transaction?.hash);
+        setPaid(true);
         setNotice({
           title: "Payment sent from the sandbox account",
           body: "Your payment is held in escrow. Your order details appear below.",
@@ -364,6 +369,11 @@ export function PayPanel({
             {notice.body}{" "}
             {hash ? <TxLink network={network} hash={hash} label="View transaction" /> : null}
           </p>
+        ) : null}
+        {paid && meta.storeUrl && meta.storeHost ? (
+          <a className="btn btn-ghost btn-block" href={meta.storeUrl} rel="noopener noreferrer">
+            Back to {meta.storeHost}
+          </a>
         ) : null}
       </section>
 

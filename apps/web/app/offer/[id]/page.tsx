@@ -2,11 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cache } from "react";
+import { OfferImage } from "@/components/offer-image";
 import { PayPanel } from "@/components/pay-panel";
 import { refundWindowLabel } from "@/components/offer-format";
 import styles from "@/components/offer.module.css";
 import { demoAccount, serverConfig } from "@/lib/config";
 import { bpsToPercent, formatUnits } from "@/lib/format";
+import { parseOfferDescription } from "@/lib/offer-meta";
 import { getOffer, getTokenMeta, previewSplit } from "@/lib/near/server";
 
 export const dynamic = "force-dynamic";
@@ -20,12 +22,21 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   if (!Number.isInteger(offerId) || offerId < 1) return { title: "Offer not found" };
   const offer = await loadOffer(offerId).catch(() => null);
   if (!offer) return { title: "Offer not found" };
-  const description = offer.description || `Buy ${offer.title} with buyer protection on ReferRail.`;
+  const meta = parseOfferDescription(offer.description);
+  const body = meta.body.replace(/\s+/g, " ").trim();
+  const description =
+    (body.length > 300 ? `${body.slice(0, 297).trimEnd()}…` : body) ||
+    `Buy ${offer.title} with buyer protection on ReferRail.`;
+  const images = meta.imageUrl ? [{ url: meta.imageUrl, alt: offer.title }] : undefined;
   return {
     title: offer.title,
     description,
-    openGraph: { title: offer.title, description },
-    twitter: { title: offer.title, description },
+    openGraph: { title: offer.title, description, ...(images ? { images } : {}) },
+    twitter: {
+      title: offer.title,
+      description,
+      ...(meta.imageUrl ? { card: "summary_large_image" as const, images: [meta.imageUrl] } : {}),
+    },
   };
 }
 
@@ -76,23 +87,43 @@ export default async function OfferPage({
   const creatorBps = preview && preview.known_creator ? preview.creator_bps : offer.commission_bps;
   const creatorPercent = bpsToPercent(creatorBps);
   const showReferrer = Boolean(refCode) && (!preview || preview.known_creator);
+  const meta = parseOfferDescription(offer.description);
 
   return (
     <div className="stack-lg">
-      <header className="page-head">
-        <p className="eyebrow">Checkout</p>
-        <h1>{offer.title}</h1>
-        {offer.description ? <p className="lead">{offer.description}</p> : null}
-        <div className={styles.headMeta}>
-          <p className={styles.headPrice}>
-            {formatUnits(offer.price, decimals)}
-            <span className="price-unit">{symbol}</span>
+      <header className={`page-head${meta.imageUrl ? " checkout-head-media" : ""}`}>
+        {meta.imageUrl ? <OfferImage src={meta.imageUrl} alt={offer.title} variant="hero" /> : null}
+        <div className="checkout-head-text">
+          <p className="eyebrow">Checkout</p>
+          <h1>{offer.title}</h1>
+          {meta.body ? <p className="lead pre-line">{meta.body}</p> : null}
+          <div className={styles.headMeta}>
+            <p className={styles.headPrice}>
+              {formatUnits(offer.price, decimals)}
+              <span className="price-unit">{symbol}</span>
+            </p>
+            {showReferrer ? (
+              <span className="badge badge-info">
+                Referred by <span className="mono">{refCode}</span>
+              </span>
+            ) : null}
+            {meta.storeUrl && meta.storeHost ? (
+              <>
+                <span className="badge">Store link · {meta.storeHost}</span>
+                <a className="link small" href={meta.storeUrl} target="_blank" rel="noopener noreferrer">
+                  View on store
+                </a>
+              </>
+            ) : null}
+          </div>
+          <p className="small muted mb-0">
+            Seller account <span className="mono">{offer.merchant}</span>
+            {offer.payout_account && offer.payout_account !== offer.merchant ? (
+              <>
+                {" "}· paid to <span className="mono">{offer.payout_account}</span>
+              </>
+            ) : null}
           </p>
-          {showReferrer ? (
-            <span className="badge badge-info">
-              Referred by <span className="mono">{refCode}</span>
-            </span>
-          ) : null}
         </div>
       </header>
 
