@@ -1950,3 +1950,152 @@ details > summary:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* ==========================================================================
+   Integrations: store metadata on offers, Shopify import, Buy button snippet
+   ========================================================================== */
+
+.pre-line {
+  white-space: pre-line;
+}
+
+/* Product images (plain <img>, fixed aspect ratio). Covers are often portrait,
+   so card and hero images are letterboxed rather than cropped. */
+.offer-image {
+  position: relative;
+  overflow: hidden;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+}
+
+.offer-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.offer-image-card {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+}
+
+.offer-image-card img,
+.offer-image-hero img {
+  object-fit: contain;
+  background: #f4f1ea;
+}
+
+.offer-image-hero {
+  width: 100%;
+  max-width: 220px;
+  aspect-ratio: 3 / 4;
+  border-radius: var(--radius);
+}
+
+.offer-image-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-sm);
+}
+
+.offer-image-empty {
+  background: linear-gradient(135deg, var(--panel-2), var(--panel-3));
+}
+
+/* Checkout header with a product image */
+.checkout-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.checkout-head-media {
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+@media (max-width: 640px) {
+  .checkout-head-media {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .checkout-head-media .offer-image-hero {
+    max-width: 160px;
+  }
+}
+
+/* Shopify import results */
+.import-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.import-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+.import-item-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.import-item-title {
+  margin: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Buy button snippet */
+.buy-preview {
+  padding: var(--space-4);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  background: #ffffff;
+}
+
+.buy-preview a:hover {
+  text-decoration: none;
+  filter: brightness(1.05);
+}
+
+textarea.snippet {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  resize: vertical;
+}
+
+/* Landing "Works with" cards */
+.integration-name {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.integration-name a {
+  color: var(--text);
+}
+
+@media (max-width: 520px) {
+  .import-item {
+    flex-wrap: wrap;
+  }
+}

@@ -1,5 +1,6 @@
 import directory from "@/data/creators.json";
 import type { CreatorMatch, Offer } from "@/lib/types";
+import { parseOfferDescription } from "@/lib/offer-meta";
 
 /**
  * Creator matching: scores the small opted-in/fictional directory against an
@@ -31,7 +32,7 @@ function keywords(text: string): Set<string> {
 }
 
 export function matchCreators(offer: Pick<Offer, "title" | "description" | "commission_bps">, limit = 3): CreatorMatch[] {
-  const offerWords = keywords(`${offer.title} ${offer.description}`);
+  const offerWords = keywords(`${offer.title} ${parseOfferDescription(offer.description).body}`);
   const creators = directory.creators as DirectoryCreator[];
 
   const scored = creators.map((creator) => {

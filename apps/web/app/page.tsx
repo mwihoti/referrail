@@ -3,6 +3,8 @@ import { bpsToPercent, formatUnits } from "@/lib/format";
 import { serverConfig } from "@/lib/config";
 import { getConfig, getTokenMeta, listOffers } from "@/lib/near/server";
 import { explorerAccount } from "@/components/explorer";
+import { OfferImage } from "@/components/offer-image";
+import { parseOfferDescription } from "@/lib/offer-meta";
 
 export const dynamic = "force-dynamic";
 
@@ -211,27 +213,32 @@ export default async function HomePage() {
         </div>
         {offers.length > 0 ? (
           <div className="grid grid-3">
-            {offers.map((offer) => (
-              <Link className="card offer-card" href={`/offer/${offer.id}`} key={offer.id}>
-                <div className="row-between">
-                  <span className="faint xsmall">Offer #{offer.id}</span>
-                  {offer.paused ? (
-                    <span className="badge badge-warn badge-dot">Paused</span>
-                  ) : (
-                    <span className="badge badge-ok badge-dot">Live</span>
-                  )}
-                </div>
-                <h3>{offer.title}</h3>
-                <p className="muted small clamp">{offer.description || "No description provided."}</p>
-                <div className="row-between offer-meta">
-                  <span className="price">
-                    {formatUnits(offer.price, decimals)}
-                    <span className="price-unit">{symbol}</span>
-                  </span>
-                  <span className="badge badge-info">{bpsToPercent(offer.commission_bps)} to creators</span>
-                </div>
-              </Link>
-            ))}
+            {offers.map((offer) => {
+              const meta = parseOfferDescription(offer.description);
+              return (
+                <Link className="card offer-card" href={`/offer/${offer.id}`} key={offer.id}>
+                  {meta.imageUrl ? <OfferImage src={meta.imageUrl} alt={offer.title} variant="card" /> : null}
+                  <div className="row-between">
+                    <span className="faint xsmall">Offer #{offer.id}</span>
+                    {offer.paused ? (
+                      <span className="badge badge-warn badge-dot">Paused</span>
+                    ) : (
+                      <span className="badge badge-ok badge-dot">Live</span>
+                    )}
+                  </div>
+                  <h3>{offer.title}</h3>
+                  {meta.storeHost ? <span className="faint xsmall">Links to {meta.storeHost}</span> : null}
+                  <p className="muted small clamp">{meta.body || "No description provided."}</p>
+                  <div className="row-between offer-meta">
+                    <span className="price">
+                      {formatUnits(offer.price, decimals)}
+                      <span className="price-unit">{symbol}</span>
+                    </span>
+                    <span className="badge badge-info">{bpsToPercent(offer.commission_bps)} to creators</span>
+                  </div>
+                </Link>
+              );
+            })}
           </div>
         ) : configured ? (
           <div className="empty">
@@ -249,6 +256,51 @@ export default async function HomePage() {
             <p>Please try again shortly.</p>
           </div>
         )}
+      </section>
+
+      {/* Integrations */}
+      <section className="stack" id="integrations" aria-labelledby="integrations-title">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">Works with</p>
+            <h2 id="integrations-title" className="section-title">
+              Bring ReferRail to the tools you already use
+            </h2>
+          </div>
+        </div>
+        <div className="grid grid-2">
+          <div className="card audience integration-card">
+            <div>
+              <p className="eyebrow">Store</p>
+              <h3 className="integration-name">Shopify</h3>
+            </div>
+            <p className="muted mb-0">
+              Paste a link to your Shopify store or product and we fill in the offer for you to review, then add a
+              Buy with ReferRail button to its page. Creators share their own link and earn on every sale.
+            </p>
+            <Link className="btn" href="/business">
+              Import a product
+            </Link>
+          </div>
+          <div className="card audience integration-card">
+            <div>
+              <p className="eyebrow">Referral campaigns</p>
+              <h3 className="integration-name">
+                <a href="https://www.ubutangaza.biz" target="_blank" rel="noopener noreferrer">
+                  Ubu-Tangaza
+                </a>
+              </h3>
+            </div>
+            <p className="muted mb-0">
+              Ubu-Tangaza helps businesses run referral campaigns: customers bring new customers, the business checks
+              the proof. ReferRail is the payment rail for the cash side: point campaign referrers to ReferRail links
+              and their commission is escrowed and paid out on chain.
+            </p>
+            <a className="btn btn-ghost" href="https://www.ubutangaza.biz" target="_blank" rel="noopener noreferrer">
+              Visit Ubu-Tangaza
+            </a>
+          </div>
+        </div>
       </section>
 
       {/* Fees */}
